@@ -1,10 +1,44 @@
 import { useState, useRef } from "react";
 import { useLocation } from "wouter";
 import { getCurrentUser, setCurrentUser, addAdminNotification, generateNotifId } from "@/lib/storage";
-import { hapticSuccess, hapticError } from "@/lib/telegram";
-import { Copy, Upload, CheckCircle, ArrowLeft, Shield, AlertCircle, Camera } from "lucide-react";
+import { hapticSuccess } from "@/lib/telegram";
+import { Copy, Upload, CheckCircle, ArrowLeft, Shield, AlertCircle, Camera, KeyRound } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
+
+function compressImage(base64: string, maxDim = 900): Promise<string> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      const ratio = Math.min(maxDim / img.width, maxDim / img.height, 1);
+      canvas.width = img.width * ratio;
+      canvas.height = img.height * ratio;
+      canvas.getContext("2d")!.drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL("image/jpeg", 0.75));
+    };
+    img.onerror = () => resolve(base64);
+    img.src = base64;
+  });
+}
+
+async function notifyAdminPayment(user: any, receiptBase64: string): Promise<void> {
+  try {
+    const compressed = await compressImage(receiptBase64);
+    await fetch("/api/notify/payment", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fullName: user.fullName,
+        phoneNumber: user.phoneNumber,
+        country: user.country,
+        telegramId: user.telegramId,
+        telegramUsername: user.telegramUsername,
+        receiptBase64: compressed,
+      }),
+    });
+  } catch { /* silent */ }
+}
 
 const USDT_ADDRESS = "0xBB0d0a72aA07Ba201626167DD7510f26Ca0325D5";
 const PAYMENT_AMOUNT = 50;
@@ -16,6 +50,9 @@ export default function PaymentPage() {
   const [receiptFile, setReceiptFile] = useState<string | null>(null);
   const [receiptName, setReceiptName] = useState<string>("");
   const [submitting, setSubmitting] = useState(false);
+  const [pinInput, setPinInput] = useState("");
+  const [pinError, setPinError] = useState("");
+  const [activatingPin, setActivatingPin] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const user = getCurrentUser();
@@ -105,35 +142,55 @@ export default function PaymentPage() {
     reader.readAsDataURL(file);
   }
 
-  function submitReceipt() {
+  async function submitReceipt() {
     if (!receiptFile || !user) return;
     setSubmitting(true);
+    const notif = {
+      id: generateNotifId(),
+      type: "payment_receipt" as const,
+      userId: user.id,
+      userFullName: user.fullName,
+      userPhone: user.phoneNumber,
+      userCountry: user.country,
+      receiptBase64: receiptFile,
+      status: "pending" as const,
+      createdAt: Date.now(),
+    };
+    addAdminNotification(notif);
+    const updated = {
+      ...user,
+      paymentSubmitted: true,
+      paymentStatus: "pending" as const,
+      paymentReceiptBase64: receiptFile,
+      paymentSubmittedAt: Date.now(),
+      pinActivated: true,
+    };
+    setCurrentUser(updated);
+    hapticSuccess();
+    notifyAdminPayment(user, receiptFile);
+    setSubmitting(false);
+    setStep("submitted");
+  }
+
+  function activatePin() {
+    if (!user) return;
+    const pin = pinInput.trim();
+    if (pin.length !== 4 || !/^\d{4}$/.test(pin)) {
+      setPinError("Please enter a valid 4-digit PIN");
+      return;
+    }
+    setActivatingPin(true);
+    const updated = {
+      ...user,
+      paymentStatus: "approved" as const,
+      withdrawPin: pin,
+      pinActivated: true,
+    };
+    setCurrentUser(updated);
     setTimeout(() => {
-      const notif = {
-        id: generateNotifId(),
-        type: "payment_receipt" as const,
-        userId: user.id,
-        userFullName: user.fullName,
-        userPhone: user.phoneNumber,
-        userCountry: user.country,
-        receiptBase64: receiptFile,
-        status: "pending" as const,
-        createdAt: Date.now(),
-      };
-      addAdminNotification(notif);
-      const updated = {
-        ...user,
-        paymentSubmitted: true,
-        paymentStatus: "pending" as const,
-        paymentReceiptBase64: receiptFile,
-        paymentSubmittedAt: Date.now(),
-        pinActivated: true,
-      };
-      setCurrentUser(updated);
-      hapticSuccess();
-      setSubmitting(false);
-      setStep("submitted");
-    }, 1500);
+      setActivatingPin(false);
+      setLocation("/withdraw");
+    }, 800);
   }
 
   return (
@@ -284,16 +341,47 @@ export default function PaymentPage() {
         )}
 
         {step === "submitted" && (
-          <div className="flex flex-col items-center text-center gap-6 pt-8">
-            <div className="w-24 h-24 rounded-full bg-green-500/15 flex items-center justify-center">
-              <CheckCircle size={44} className="text-green-500" />
+          <div className="flex flex-col items-center text-center gap-5 pt-6">
+            <div className="w-20 h-20 rounded-full bg-green-500/15 flex items-center justify-center">
+              <CheckCircle size={40} className="text-green-500" />
             </div>
             <div className="space-y-2">
               <h2 className="text-xl font-bold text-green-400">Receipt Submitted!</h2>
               <p className="text-muted-foreground text-sm leading-relaxed max-w-xs">
-                Your payment receipt has been sent to our admin. You will receive your withdrawal PIN within <span className="text-yellow-400 font-semibold">1-24 hours</span> after approval.
+                Your receipt is under review. Once approved, you'll receive your <span className="text-yellow-400 font-semibold">4-digit PIN via Telegram</span>. This usually takes 1–24 hours.
               </p>
             </div>
+
+            {/* PIN entry section */}
+            <div className="glass-card rounded-2xl p-5 w-full border border-yellow-500/20 space-y-4 text-left">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-yellow-500/15 flex items-center justify-center shrink-0">
+                  <KeyRound size={20} className="text-yellow-500" />
+                </div>
+                <div>
+                  <p className="font-semibold text-sm">Already received your PIN?</p>
+                  <p className="text-muted-foreground text-xs">Enter the 4-digit PIN sent to you via Telegram</p>
+                </div>
+              </div>
+              <input
+                type="number"
+                inputMode="numeric"
+                maxLength={4}
+                placeholder="Enter 4-digit PIN"
+                value={pinInput}
+                onChange={(e) => { setPinInput(e.target.value.slice(0, 4)); setPinError(""); }}
+                className="w-full bg-secondary/60 border border-border/60 rounded-xl px-4 py-4 text-center text-2xl font-bold tracking-widest text-yellow-400 focus:outline-none focus:border-yellow-500/60"
+              />
+              {pinError && <p className="text-red-400 text-xs text-center">{pinError}</p>}
+              <Button
+                className="w-full gold-gradient text-black font-bold py-5"
+                onClick={activatePin}
+                disabled={activatingPin || pinInput.length !== 4}
+              >
+                {activatingPin ? "Activating..." : "Activate PIN & Withdraw"}
+              </Button>
+            </div>
+
             <div className="glass-card rounded-2xl p-4 w-full space-y-2">
               <p className="text-muted-foreground text-xs">Submission Details</p>
               <div className="space-y-1 text-sm">
@@ -303,7 +391,7 @@ export default function PaymentPage() {
                 <div className="flex justify-between"><span className="text-muted-foreground">Status</span><span className="text-amber-400 font-medium">Pending Review</span></div>
               </div>
             </div>
-            <Button onClick={() => setLocation("/dashboard")} className="gold-gradient text-black font-bold px-10 py-6 w-full" data-testid="button-back-dashboard">
+            <Button onClick={() => setLocation("/dashboard")} variant="outline" className="w-full py-5" data-testid="button-back-dashboard">
               Back to Dashboard
             </Button>
           </div>

@@ -4,7 +4,6 @@
   "installCommand": "npm install",
   "framework": "vite",
   "rewrites": [
-    { "source": "/api/telegram/(.*)", "destination": "/api/telegram/$1" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }

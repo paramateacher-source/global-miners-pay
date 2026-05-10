@@ -11,6 +11,23 @@ import { COUNTRIES, formatDualCurrency, type CountryInfo } from "@/lib/currencie
 import { getCurrentUser, setCurrentUser, generateUserId } from "@/lib/storage";
 import { getTelegramUser } from "@/lib/telegram";
 import { useEffect } from "react";
+
+async function notifyAdminRegistration(user: any) {
+  try {
+    await fetch("/api/notify/register", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        fullName: user.fullName,
+        phoneNumber: user.phoneNumber,
+        country: user.country,
+        telegramId: user.telegramId,
+        telegramUsername: user.telegramUsername,
+      }),
+    });
+  } catch { /* silent */ }
+}
+
 import { Shield, User, Phone, MapPin, ChevronRight } from "lucide-react";
 
 const schema = z.object({
@@ -70,6 +87,7 @@ export default function RegisterPage() {
       telegramUsername: tgUser?.username || null,
     };
     setCurrentUser(user);
+    notifyAdminRegistration(user);
     setTimeout(() => {
       setLoading(false);
       setLocation("/dashboard");
